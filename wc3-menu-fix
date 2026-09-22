@@ -1,0 +1,159 @@
+#!/bin/bash
+#
+# wc3-menu-fix: let Warcraft III Reforged's menu browser use the GPU on macOS.
+#
+# The game draws its main menu with an embedded Chromium (BlizzardBrowser).
+# That browser is launched with --disable-gpu and --disable-gpu-compositing
+# baked into its binary, so on Apple Silicon the whole menu is rasterized on
+# the CPU by SwiftShader, under Rosetta, at full game resolution.
+#
+# This script renames those switches inside the binary to same-length names
+# Chromium does not recognise, then re-signs the bundle ad hoc so macOS will
+# still run it. Nothing else in the game is touched.
+#
+#   wc3-menu-fix apply    patch the browser (game must be closed)
+#   wc3-menu-fix revert   restore the backed-up original
+#   wc3-menu-fix status   report whether the patch is in place
+#
+# Set WC3_DIR if the game is not in "/Applications/Warcraft III".
+
+set -euo pipefail
+
+WC3_DIR="${WC3_DIR:-/Applications/Warcraft III}"
+APP="$WC3_DIR/_retail_/x86_64/BlizzardBrowser/BlizzardBrowser.app"
+BIN="$APP/Contents/MacOS/BlizzardBrowser"
+SEAL="$APP/Contents/_CodeSignature/CodeResources"
+BACKUP_DIR="${WC3_MENU_FIX_BACKUP:-$HOME/Library/Application Support/Blizzard/Warcraft III/wc3-mac-menu-fix-backup}"
+
+# Each original switch and its same-length replacement.
+SWITCHES=(
+  "disable-gpu-shader-disk-cache:disable-gpu-shader-disk-cachx"
+  "disable-gpu-compositing:disable-gpu-compositinx"
+  "disable-gpu:disable-gpx"
+)
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+
+require_macos() {
+  [[ "$(uname -s)" == "Darwin" ]] || die "this only makes sense on macOS"
+}
+
+require_install() {
+  [[ -f "$BIN" ]] || die "BlizzardBrowser not found at:
+  $BIN
+Set WC3_DIR to the folder that contains _retail_ if the game lives elsewhere."
+}
+
+require_closed() {
+  if pgrep -f "$WC3_DIR/_retail_/" >/dev/null 2>&1; then
+    die "close Warcraft III first"
+  fi
+}
+
+# Count NUL-delimited occurrences of a string in the binary.
+count_switch() {
+  perl -0777 -ne 'my $n = () = /\0\Q'"$1"'\E\0/g; print $n' "$BIN"
+}
+
+is_patched() {
+  [[ "$(count_switch "disable-gpx")" -ge 1 ]]
+}
+
+is_pristine() {
+  local pair
+  for pair in "${SWITCHES[@]}"; do
+    [[ "$(count_switch "${pair%%:*}")" -eq 1 ]] || return 1
+  done
+}
+
+sign() {
+  codesign --force --sign - "$APP" 2>/dev/null
+  codesign --verify --deep --strict "$APP" 2>/dev/null || die "re-signed bundle failed verification"
+}
+
+cmd_apply() {
+  require_closed
+  if is_patched; then
+    say "Already patched. Nothing to do."
+    return
+  fi
+  is_pristine || die "the binary does not look like an unpatched BlizzardBrowser (unexpected switch layout);
+refusing to modify it. Run 'Scan and Repair' in Battle.net and try again."
+
+  mkdir -p "$BACKUP_DIR"
+  cp -p "$BIN" "$BACKUP_DIR/BlizzardBrowser"
+  [[ -f "$SEAL" ]] && cp -p "$SEAL" "$BACKUP_DIR/CodeResources"
+  say "Backed up original to: $BACKUP_DIR"
+
+  local pair old new
+  for pair in "${SWITCHES[@]}"; do
+    old="${pair%%:*}"; new="${pair##*:}"
+    [[ ${#old} -eq ${#new} ]] || die "internal error: replacement length mismatch"
+    perl -0777 -pi -e 's/\0\Q'"$old"'\E\0/\0'"$new"'\0/g' "$BIN"
+    say "  $old -> $new"
+  done
+
+  sign
+  say "Re-signed ad hoc. Launch the game from Battle.net and enjoy the menu."
+  say "Battle.net restores the original on the next game update; just run 'apply' again."
+}
+
+cmd_revert() {
+  require_closed
+  if ! is_patched; then
+    say "Not patched. Nothing to revert."
+    return
+  fi
+  [[ -f "$BACKUP_DIR/BlizzardBrowser" ]] || die "no backup at $BACKUP_DIR
+Run 'Scan and Repair' in Battle.net to restore the original."
+
+  cp -p "$BACKUP_DIR/BlizzardBrowser" "$BIN"
+  [[ -f "$BACKUP_DIR/CodeResources" ]] && cp -p "$BACKUP_DIR/CodeResources" "$SEAL"
+  if codesign --verify --deep --strict "$APP" 2>/dev/null; then
+    say "Restored the original binary and signature."
+  else
+    sign
+    say "Restored the original binary (re-signed ad hoc)."
+    say "For a byte-exact original, run 'Scan and Repair' in Battle.net."
+  fi
+}
+
+cmd_status() {
+  say "Game folder:  $WC3_DIR"
+  say "Browser:      $(file -b "$BIN" | sed 's/, flags.*//')"
+  if is_patched; then
+    say "Patch:        applied"
+  elif is_pristine; then
+    say "Patch:        not applied"
+  else
+    say "Patch:        unknown layout (partially patched or a different build)"
+  fi
+  if codesign --verify --deep --strict "$APP" 2>/dev/null; then
+    say "Signature:    valid ($(codesign -dv "$APP" 2>&1 | sed -n 's/^Signature=//p'))"
+  else
+    say "Signature:    INVALID"
+  fi
+  [[ -f "$BACKUP_DIR/BlizzardBrowser" ]] && say "Backup:       $BACKUP_DIR" || say "Backup:       none"
+
+  local gpu_pid
+  gpu_pid="$(pgrep -f 'BlizzardBrowser Helper \(GPU\).*--type=gpu-process' | head -1 || true)"
+  if [[ -n "$gpu_pid" ]]; then
+    if ps -o args= -p "$gpu_pid" | grep -q -- '--use-gl=swiftshader'; then
+      say "Running now:  menu browser is using SOFTWARE rendering (SwiftShader)"
+    else
+      say "Running now:  menu browser is using GPU rendering"
+    fi
+  else
+    say "Running now:  game not running"
+  fi
+}
+
+require_macos
+require_install
+case "${1:-}" in
+  apply)  cmd_apply ;;
+  revert) cmd_revert ;;
+  status) cmd_status ;;
+  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

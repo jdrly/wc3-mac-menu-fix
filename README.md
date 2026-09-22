@@ -97,3 +97,7 @@ Not affiliated with or endorsed by Blizzard Entertainment. You are modifying a f
 ## License
 
 MIT
+
+## Contact
+
+Jan Drlý, jd@jandrly.cz. Issues and pull requests are welcome, especially reports from other Macs, macOS versions or game builds.

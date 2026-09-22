@@ -130,7 +130,7 @@ cmd_status() {
     say "Patch:        unknown layout (partially patched or a different build)"
   fi
   if codesign --verify --deep --strict "$APP" 2>/dev/null; then
-    say "Signature:    valid ($(codesign -dv "$APP" 2>&1 | sed -n 's/^Signature=//p'))"
+    say "Signature:    valid ($(codesign -dv "$APP" 2>&1 | sed -n "s/.*flags=0x[0-9a-f]*(\\([a-z,]*\\)).*/\\1/p" | head -1))"
   else
     say "Signature:    INVALID"
   fi

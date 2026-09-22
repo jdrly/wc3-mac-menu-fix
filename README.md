@@ -84,7 +84,7 @@ Battle.net replaces the browser binary whenever it patches the game, and "Scan a
 
 - Some menu animations render imperfectly on the GPU path with this old Chromium build. Buttons, navigation and matchmaking are unaffected.
 - Battle.net does not verify this file before launch, so the patch survives day to day, but there is no guarantee that stays true forever.
-- This only helps the menu. In-match performance is the game engine, which is unaffected by this script.
+- This only helps the menu. Measured during play on a campaign map, the browser processes sit at 1 to 3% CPU with or without the patch, so in-game performance is the game engine and is unaffected by this script.
 
 ## How it was found
 
